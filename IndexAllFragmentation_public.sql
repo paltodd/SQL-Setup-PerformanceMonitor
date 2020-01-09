@@ -1,22 +1,24 @@
 USE [master]
 GO
---can't run this piece only on server with AG because needs to be in Full for synchronization; 
+--can't run this piece only on server with AG because needs to be in Full for synchronization; Web-dbs04
 if ((select count(*) from master.sys.availability_groups) = 0)
 ALTER DATABASE [DBAWORK] SET RECOVERY SIMPLE WITH NO_WAIT
 GO
-
 
 
 use DBAWORK
 go
 
 /***********************************************
-Requirements
-change DL-DataServices@ to your email address
-ola installed to master
-sp_whoisactive to master
-mail configured
-sp_foreachdb to master
+ Author:	  Todd Palecek
+ Create date: 1/9/2020
+ Description: Consolidated script for performance monitoring
+ Requirements: 
+			change DL-DataServices@ to your email address
+			ola installed to master
+			sp_whoisactive to master
+			mail configured
+			sp_foreachdb to master
 ***********************************************/
 
 --select top 1 Version, Date from DBAWORK.[dbo].[tb_Performance_Monitoring_Version] order by Date DESC  --current version
@@ -105,6 +107,21 @@ GO
 6/25/19  5.31   Add DB meta data collection
 9/5/19   5.32   Add Set Nocount on to SP
 9/19/19  5.33   Add comments to bp_long_run_All and ensure Set Nocount On in all SP
+12/6/19  5.34	Add Clustered Index to tb_DB_Meta
+12/12/19 5.35   Add tb_Stored_Procedure_Execution_History.idx_tb_Stored_Procedure_Execution_History_Date and tb_Top_Queries_History.idx_tb_Top_Queries_History_Date
+				Clean up from Kline Scripts
+					DB_Name to same size tb_Execution_Daily_Chk,tb_Stored_Procedure_Execution_Daily_Chk,tb_Stored_Procedure_Execution_History,tb_Top_Queries_History		
+					TableName to same size tb_errors
+					DBName to same size tb_DB_Meta
+					program_name to same size tb_lock_history
+					database_name to same tb_Servers_Databases
+					index_name to same tb_Index_Usage_History, Update_Stats_Log
+					Update_Stats_Log stats_name to nvarchar(1000) to match index_name
+					name to same tb_distribution_commands
+					SP_Name to same tb_Parameters, tb_Stored_Procedure_Execution_Daily_Chk, tb_Stored_Procedure_Execution_Daily_Chk_Prob
+					Execution_count to same tb_Stored_Procedure_History
+					primary key to Update_Stats_log
+1/3/20	5.36	Add exclusion for bp_long_run_all with bp_long_run_SP, bp_Monitor_SQL_Blocking and bp_QueryStore_Purge; disable DBAWORK - SP Slow Check
 */
 
 /* To exclude tables from Error Check for non population
@@ -164,7 +181,7 @@ CREATE TABLE [dbo].[tb_Performance_Monitoring_Version](
 
 
 INSERT INTO [dbo].[tb_Performance_Monitoring_Version] ([Version],[Date])
-     VALUES ('5.33',getdate())
+     VALUES ('5.36',getdate())
 
 
 --add tables
@@ -194,7 +211,7 @@ GO
 IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[tb_errors]') AND TYPE IN (N'U'))
 CREATE TABLE [dbo].[tb_errors](
 	[Date] [datetime] NULL,
-	[TableName] [nvarchar](50) NULL,
+	[TableName] [nvarchar](500) NULL, --[nvarchar](50) NULL,
 	[Message] [nvarchar](250) NULL,
 	[ID] [int] IDENTITY(1,1) NOT NULL,
  CONSTRAINT [pk_ID_Errors] PRIMARY KEY CLUSTERED 
@@ -267,7 +284,7 @@ CREATE TABLE [dbo].[tb_Stored_Procedure_History](
 	[SP_Name] [nvarchar](500) NULL,
 	[Create_Date] [datetime] NULL,
 	[Modify_Date] [datetime] NULL,
-	[Execution_Count] [decimal](18, 0) NULL,
+	[Execution_Count] [bigint] NULL,  -- [decimal](18, 0) NULL,
 	[Date] [datetime] NULL,
 	[ID] [int] IDENTITY(1,1) NOT NULL,
  CONSTRAINT [pk_ID_SP] PRIMARY KEY CLUSTERED 
@@ -280,7 +297,7 @@ IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[tb
 CREATE TABLE [dbo].[tb_Index_Usage_History](
 	[DB_Name] [nvarchar](500) NULL,
 	[Table_Name] [nvarchar](500) NULL,
-	[Index_Name] [nvarchar](500) NULL,
+	[Index_Name] [nvarchar](1000) NULL, --[nvarchar](500) NULL,
 	[user_seeks] [decimal](18, 0) NULL,
 	[user_scans] [decimal](18, 0) NULL,
 	[user_lookups] [decimal](18, 0) NULL,
@@ -302,7 +319,7 @@ CREATE TABLE [dbo].[tb_Index_Usage_History](
 
 IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[tb_Stored_Procedure_Execution_History]') AND TYPE IN (N'U'))
 CREATE TABLE [dbo].[tb_Stored_Procedure_Execution_History](
-	[DB_Name] [nvarchar](250) NULL,
+	[DB_Name] [nvarchar](500) NULL, --(250) NULL,
 	[SP Name] [sysname] NOT NULL,
 	[execution_count] [bigint] NOT NULL,
 	[Calls/Second] [bigint] NOT NULL,
@@ -335,6 +352,12 @@ CREATE NONCLUSTERED INDEX [idx_tb_Stored_Procedure_Execution_History_Name_time]
 ON [dbo].[tb_Stored_Procedure_Execution_History] ([DB_Name],[SP Name])
 INCLUDE ([avg_elapsed_time])
 GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_tb_Stored_Procedure_Execution_History_Date' AND object_id = OBJECT_ID('tb_Stored_Procedure_Execution_History'))
+CREATE NONCLUSTERED INDEX [idx_tb_Stored_Procedure_Execution_History_Date]
+ON [dbo].[tb_Stored_Procedure_Execution_History] ([Date])
+GO
+
 
 IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[tb_Index_Free_Space]') AND TYPE IN (N'U'))
 CREATE TABLE [dbo].[tb_Index_Free_Space](
@@ -388,7 +411,7 @@ GO
 IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[tb_Parameters]') AND TYPE IN (N'U'))
 CREATE TABLE [dbo].[tb_Parameters](
 	[Item] [nvarchar](250) NULL,
-	[SP_Name] [nvarchar](250) NULL,
+	[SP_Name] [nvarchar](500) NULL,  --[nvarchar](250) NULL,
 	[Class] [nvarchar](250) NULL,
 	[Date] [datetime] NOT NULL DEFAULT(GETDATE()),
 	[ID] [int] IDENTITY(1,1) NOT NULL,
@@ -412,7 +435,7 @@ AS
 IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[tb_Top_Queries_History]') AND TYPE IN (N'U'))
 CREATE TABLE [dbo].[tb_Top_Queries_History](
 	[name] [nvarchar](128) NULL,
-	[DB_Name] [nvarchar](250) NULL,
+	[DB_Name] [nvarchar](500) NULL, --(250) NULL,
 	[execution_count] [bigint] NOT NULL,
 	[total_logical_reads] [bigint] NOT NULL,
 	[last_logical_reads] [bigint] NOT NULL,
@@ -446,9 +469,14 @@ CREATE NONCLUSTERED INDEX [idx_tb_Top_Queries_History_AvgExecutionDuration] ON [
 )WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON [PRIMARY]
 GO
 
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_tb_Top_Queries_History_Date' AND object_id = OBJECT_ID('tb_Top_Queries_History'))
+CREATE NONCLUSTERED INDEX [idx_tb_Top_Queries_History_Date]
+ON [dbo].[tb_Top_Queries_History] ([Date]) WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON [PRIMARY]
+GO
+
 IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[tb_distribution_commands]') AND TYPE IN (N'U'))
 CREATE TABLE [dbo].[tb_distribution_commands](
-	[name] [nvarchar](100) NOT NULL,
+	[name] [nvarchar](128) NOT NULL,  --[nvarchar](100) NOT NULL,
 	[id] [int] NOT NULL,
 	[start_time] [datetime] NOT NULL,
 	[runstatus] [int] NOT NULL,
@@ -481,7 +509,7 @@ CREATE TABLE [dbo].[tb_lock_history](
 	blocking_session_id [int] NULL,
 	[text] varchar(8000) null,
 	[host_name] varchar(128) null,
-	[program_name] varchar(128) null,
+	[program_name] nvarchar(128) null,  --varchar(128) null,
 	[login_name] varchar(128) null,	
 	[login_time] datetime null,
 	[DateTime] [datetime] NULL,
@@ -571,7 +599,7 @@ CREATE TABLE [dbo].[tb_Servers_Databases](
 	[dbID] [int] IDENTITY(1,1) NOT FOR REPLICATION NOT NULL,
 	[serID] [int] NULL,
 	[server_name] [nvarchar](50) NULL,
-	[database_name] [nvarchar](150) NULL,
+	[database_name] [nvarchar](500) NULL, --[nvarchar](150) NULL,
 	[description] [nvarchar](100) NULL,
 	[it_owner] [nvarchar](50) NULL,
 	[business_owner] [nvarchar](50) NULL,
@@ -594,8 +622,8 @@ GO
 IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[DBAWORK].[dbo].[tb_Stored_Procedure_Execution_Daily_Chk]') AND TYPE IN (N'U'))
 CREATE TABLE [DBAWORK].[dbo].[tb_Stored_Procedure_Execution_Daily_Chk](
 	[ID] [int] IDENTITY(1,1) NOT NULL,
-	[DB_Name] [nvarchar](250) NULL,
-	[SP_Name] [sysname] NOT NULL,
+	[DB_Name] [nvarchar](500) NULL, --(250) NULL,
+	[SP_Name] [nvarchar](500) NOT NULL,  --[sysname] NOT NULL,
 	[last_elapsed_time] [bigint] NULL,
 	[Date] [datetime] NOT NULL,
  CONSTRAINT [pk_ID_SPDlyChk] PRIMARY KEY CLUSTERED 
@@ -607,7 +635,7 @@ GO
 IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[DBAWORK].[dbo].[tb_Stored_Procedure_Execution_Daily_Chk_Prob]') AND TYPE IN (N'U'))
 CREATE TABLE [DBAWORK].[dbo].[tb_Stored_Procedure_Execution_Daily_Chk_Prob](
 	[ID] [int] IDENTITY(1,1) NOT NULL,
-	[SP_Name] [sysname] NOT NULL,
+	[SP_Name] [nvarchar](500) NOT NULL,  --[sysname] NOT NULL,
  CONSTRAINT [pk_ID_SPDlyChkProb] PRIMARY KEY CLUSTERED 
 (	[ID] ASC
 )WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON [PRIMARY]
@@ -712,16 +740,23 @@ CREATE TABLE [dbo].[tb_Page_Life_Expectancy](
 
 IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[Update_Stats_Log]') AND TYPE IN (N'U'))
 CREATE TABLE [dbo].[Update_Stats_Log](
-	[Stats_Name] [nvarchar](500) NULL,
-	[Index_Name] [nvarchar](500) NULL,
+	[Stats_Name] [nvarchar](1000) NULL,
+	[Index_Name] [nvarchar](1000) NULL,
 	[StartTime] [datetime] NULL,
-	[Duration] [int] NULL
+	[Duration] [int] NULL,
+	[ID] [int] IDENTITY(1,1) NOT NULL,
+ CONSTRAINT [PK_ID_UpdateStatsLog] PRIMARY KEY CLUSTERED 
+(
+	[ID] ASC
+)WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON [PRIMARY]
 ) ON [PRIMARY]
+GO
+
 
 IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[tb_Execution_Daily_Chk]') AND TYPE IN (N'U'))
 CREATE TABLE [dbo].[tb_Execution_Daily_Chk](
 	[ID] [int] IDENTITY(1,1) NOT NULL,
-	[DB_Name] [nvarchar](250) NULL,
+	[DB_Name] [nvarchar](500) NULL, --(250) NULL,
 	[Obj_Name] [sysname] NOT NULL,
 	[Obj_Type] [nvarchar](50) NULL,
 	[last_elapsed_time] [bigint] NULL,
@@ -780,13 +815,19 @@ IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[tb
 CREATE TABLE [dbo].[tb_DB_Meta](
 	[row_id] [int] IDENTITY(1,1) NOT NULL,
 	[ServerName] [nvarchar](128) NULL,
-	[DBName] [sysname] NOT NULL,
+	[DBName] [nvarchar](500) NOT NULL, --[sysname] NOT NULL,
 	[FileType] [nvarchar](60) NULL,
 	[Location] [nvarchar](260) NOT NULL,
 	[size] [int] NOT NULL,
 	[Date] [datetime] NOT NULL
 ) ON [PRIMARY]
 GO
+
+ALTER TABLE [dbo].[tb_DB_Meta] ADD  CONSTRAINT [pk_DB_Meta] PRIMARY KEY CLUSTERED 
+(	[row_id] ASC
+)WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON [PRIMARY]
+GO
+
 
 
 -------------------------------------------------
@@ -1270,6 +1311,30 @@ INSERT INTO DBAWORK.[dbo].[tb_Parameters] ([Item],[SP_Name],[Class],[Date])
      VALUES ('bp_long_run_All','bp_long_run_All','Exclusion',getdate())
 GO
 
+IF NOT EXISTS (SELECT * FROM DBAWORK.[dbo].[tb_Parameters] WHERE Item = 'bp_long_run_All' and SP_Name='bp_long_run_SP' and Class='Exclusion')
+INSERT INTO DBAWORK.[dbo].[tb_Parameters] ([Item],[SP_Name],[Class],[Date])
+     VALUES ('bp_long_run_All','bp_long_run_SP','Exclusion',getdate())
+GO
+
+IF NOT EXISTS (SELECT * FROM DBAWORK.[dbo].[tb_Parameters] WHERE Item = 'bp_Monitor_SQL_Blocking' and SP_Name='bp_long_run_All' and Class='Exclusion')
+INSERT INTO DBAWORK.[dbo].[tb_Parameters] ([Item],[SP_Name],[Class],[Date])
+     VALUES ('bp_Monitor_SQL_Blocking','bp_long_run_All','Exclusion',getdate())
+GO
+
+IF NOT EXISTS (SELECT * FROM DBAWORK.[dbo].[tb_Parameters] WHERE Item = 'bp_Monitor_SQL_Blocking' and SP_Name='bp_long_run_SP' and Class='Exclusion')
+INSERT INTO DBAWORK.[dbo].[tb_Parameters] ([Item],[SP_Name],[Class],[Date])
+     VALUES ('bp_Monitor_SQL_Blocking','bp_long_run_SP','Exclusion',getdate())
+GO
+
+IF NOT EXISTS (SELECT * FROM DBAWORK.[dbo].[tb_Parameters] WHERE Item = 'bp_QueryStore_Purge' and SP_Name='bp_long_run_All' and Class='Exclusion')
+INSERT INTO DBAWORK.[dbo].[tb_Parameters] ([Item],[SP_Name],[Class],[Date])
+     VALUES ('bp_QueryStore_Purge','bp_long_run_All','Exclusion',getdate())
+GO
+
+IF NOT EXISTS (SELECT * FROM DBAWORK.[dbo].[tb_Parameters] WHERE Item = 'bp_QueryStore_Purge' and SP_Name='bp_long_run_SP' and Class='Exclusion')
+INSERT INTO DBAWORK.[dbo].[tb_Parameters] ([Item],[SP_Name],[Class],[Date])
+     VALUES ('bp_QueryStore_Purge','bp_long_run_SP','Exclusion',getdate())
+GO
 
 
 -------------------------------------------------
@@ -1890,8 +1955,8 @@ having count(SP_Name) > 1;
 
 
 if ((select count(*) from DBAWORK..tb_Stored_Procedure_Execution_Daily_Chk_Prob) > 0)
-EXEC msdb..sp_send_dbmail 
-@recipients=@Email, 
+EXEC msdb..sp_send_dbmail --@profile_name='DAXDBS04_Mail',
+@recipients=@Email, --'DL-DataServices@'
 @subject='Long Running Stored Procs',
 @query= 'SELECT  distinct top 1000  (rtrim(ltrim(H.[DB_Name])) + ''.'' + rtrim(ltrim(H.[SP_Name]))) SPName, H.last_elapsed_time, S.Mean, cast(S.UpperBound as int) as UpprBnd, H.[Date]
 	FROM          DBAWORK.dbo.vw_AnalysisUpperLowerBoundsSP AS S 
@@ -1911,7 +1976,7 @@ GO
 
 CREATE PROCEDURE [dbo].[bp_cpu_utilization] AS
 
---track history of memory, cpu, transactions built by Todd Palecek  8/5/2015
+--track history of memory, cpu, transactions built by Todd Palecek toddpalecek@gmail.com 8/5/2015
 --exec DBAWORK..bp_cpu_utilization
 
 BEGIN
@@ -2863,7 +2928,7 @@ DECLARE @SQLcmd                 NVARCHAR(MAX),
 SELECT  @log_space_threshold_email              = ISNULL(@log_space_threshold_email,            75),
         @log_space_threshold_email_and_page     = ISNULL(@log_space_threshold_email_and_page,   90),
         @EmailAddress                           = ISNULL(@EmailAddress, 'DL-DataServices@'),
-        @PageAddress                            = ISNULL(@PageAddress,  'DL-DataServices@')
+        @PageAddress                            = ISNULL(@PageAddress,  'DL-DataServicesPagers@')
 
 SELECT  @EmailSubject                           = 'ALERT - DB Transaction Log Threshold Limit Exceeded On ' + @@SERVERNAME,
         @PageSubject                            = 'ALERT - DB Transaction Log Threshold Limit Exceeded',
@@ -3248,7 +3313,7 @@ into ##distprob
 
 if ((select count(*) from ##distprob) > 0)
 EXEC msdb..sp_send_dbmail @profile_name='DAX-DISTDB01_Mail',
-@recipients='DL-DataServices@', 
+@recipients='DL-DataServices@', --'DL-DataServices@m',
 @subject='Dist Publication with No Activity Yesterday',
 @query= 'SELECT * from ##distprob' 
 
@@ -3755,7 +3820,7 @@ SELECT @jobId = job_id FROM msdb.dbo.sysjobs WHERE (name = N'DBAWORK - SP Slow C
 IF (@jobId IS NULL)
 BEGIN
 EXEC @ReturnCode =  msdb.dbo.sp_add_job @job_name=N'DBAWORK - SP Slow Check', 
-		@enabled=1, 
+		@enabled=0, 
 		@notify_level_eventlog=0, 
 		@notify_level_email=0, 
 		@notify_level_netsend=0, 
@@ -4204,6 +4269,7 @@ set @Email = (SELECT Item FROM DBAWORK.[dbo].[tb_Parameters] WHERE SP_Name=''ALL
 if ((SELECT count([Date]) FROM [DBAWORK].[dbo].[tb_errors] where [Date] > getdate()-1) > 0)
 EXEC msdb..sp_send_dbmail @profile_name = @ServerProfile,
 @recipients=@Email,
+--@recipients=''DL-DataServices@'', --''~~DataServices@'',
 @subject=''Monitoring Failures'',
 @body = ''One or more monitoring pieces did not run. Please execute SELECT [Date] ,[TableName] ,[Message] FROM [DBAWORK].[dbo].[tb_errors] where Date > GETDATE()-1''
 ', 
@@ -4310,6 +4376,7 @@ set @Email = (SELECT Item FROM DBAWORK.[dbo].[tb_Parameters] WHERE SP_Name=''ALL
 --multiple in short time, 1 hr for now
 --if ((select count(*) from ##errlog where err like ''Login failed for user%'' and LogDate > getdate() - .041667) > 10)
 --EXEC sp_send_dbmail @profile_name = @ServerProfile,
+----@recipients=''DL-DataServices@'', --''~~DataServices@'',
 --@subject=''Failed Logins-Multiple in Short Time'',
 --@query = ''select LogDate, left(err,50) from ##errlog where err like ''''Login failed for user%'''' and LogDate > getdate() - 1 order by LogDate''
 
@@ -4317,6 +4384,7 @@ set @Email = (SELECT Item FROM DBAWORK.[dbo].[tb_Parameters] WHERE SP_Name=''ALL
 if ((select count(*) from ##errlog where err like ''Login failed for user%'' and LogDate > getdate() - 1) > 0)
 EXEC sp_send_dbmail @profile_name = @ServerProfile,
 @recipients=@Email,
+--@recipients=''DL-DataServices@'', --''~~DataServices@'',
 @subject=''Failed Logins'',
 @query = ''select LogDate, left(err,50) from ##errlog where err like ''''Login failed for user%'''' and LogDate > getdate() - 1 order by LogDate''
 
@@ -4433,6 +4501,7 @@ begin
 if ((SELECT count(CPU) FROM DBAWORK.dbo.tb_WhoIsActive where collection_time >getdate()-.125 and start_time < getdate()-.5 and login_name not in (''MILESKIMBALL\mkspotlight001'',''NT AUTHORITY\SYSTEM'') and (cast(sql_text as varchar(max)) not like ''%checkdb%'' or cast(sql_text as varchar(max)) not like ''%ParamFragmentationLevel%'')) > 0)
 EXEC msdb..sp_send_dbmail @profile_name = @ServerProfile,
 @recipients=''DL-DataServices@'',
+--@recipients=''DL-DataServices@'', --''~~DataServices@'',
 @subject=''Zombie Process'',
 @body = ''One or more processes has been running longer than 3 hours. Please execute SELECT * FROM [DBAWORK].[dbo].[tb_WhoIsActive] 
   where collection_time >getdate()-.125 and start_time < getdate()-.5 and login_name not in (''''MILESKIMBALL\mkspotlight001'''')''
@@ -4441,6 +4510,7 @@ begin
 if ((SELECT count(CPU) FROM DBAWORK.dbo.tb_WhoIsActive where collection_time >getdate()-.125 and start_time < getdate()-.5 and login_name not in (''MILESKIMBALL\mkspotlight001'',''NT AUTHORITY\SYSTEM'')) > 0)
 EXEC msdb..sp_send_dbmail @profile_name = @ServerProfile,
 @recipients=''DL-DataServices@'',
+--@recipients=''DL-DataServices@'', --''~~DataServices@'',
 @subject=''Zombie Process'',
 @body = ''One or more processes has been running longer than 3 hours. Please execute SELECT * FROM [DBAWORK].[dbo].[tb_WhoIsActive] 
   where collection_time >getdate()-.125 and start_time < getdate()-.5 and login_name not in (''''MILESKIMBALL\mkspotlight001'''')''
